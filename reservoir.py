@@ -1,12 +1,11 @@
 import numpy as np
 
 from tqdm import tqdm
-from logger import LogHandler
 from typing import Union, Callable
 from skimage.feature import peak_local_max
 from sklearn.neural_network import MLPRegressor
 from utils import peak_downsample, grid_downsample
-from optical_setup import OpticalSetupSim, OpticalSetup
+from optical_setup import OpticalSetup
 from sklearn.linear_model import Ridge, RidgeCV, LassoCV, ElasticNetCV, BayesianRidge, LinearRegression
 
 
@@ -42,7 +41,7 @@ class Reservoir:
                  reg_model: str, reg_model_params: dict = None, reg_window: int = None,
                  res_type: str = 'vanilla',
                  optical_features: str = 'linear',
-                 optical_setup: Union[None, OpticalSetupSim, OpticalSetup] = None,
+                 optical_setup: Union[None, OpticalSetup] = None,
                  seed: int = 42, peak_finder: bool = False):
         '''
         Params:
@@ -57,8 +56,6 @@ class Reservoir:
         '''
 
         assert optical_features in ['linear', 'nonlinear', None], NotImplementedError('What kind of magical features are you looking for?')
-
-        self.logger = LogHandler(module_name='Optical Setup Simulation', log_dir='./', log_level='INFO')
 
         self._base_seed = seed
         self.rng = np.random.default_rng(seed)
@@ -92,7 +89,7 @@ class Reservoir:
         self.speckle_grain_radius = 3
         
         if self.peak_finder: # Select the brightest spots in the speckle to update the states
-            self.logger.info('Selecting speckle indices (brightest spots).')
+            print('Selecting speckle indices (brightest spots).')
             self.optical_setup._refresh_ref_speckle()
             self.speckle_lin_center_coords = peak_local_max(
                 self.optical_setup.ref_speckle_single,
@@ -112,7 +109,7 @@ class Reservoir:
             assert self.speckle_lin_center_coords.shape[0] == res_dim and self.speckle_nonlin_center_coords.shape[0] == res_dim
         
         else: # Circular downsample in a grid -> random select some indices
-            self.logger.info('Selecting speckle indices (grid).')
+            print('Selecting speckle indices (grid).')
             self.optical_setup._refresh_ref_speckle()
             speckle_tmp = grid_downsample(img=self.optical_setup.ref_speckle_single, s=2*2*self.speckle_grain_radius, radius=self.speckle_grain_radius, agg='mean') # s=8, r=2
             self.speckle_idx = np.random.choice(speckle_tmp.size, size=self.res_dim)

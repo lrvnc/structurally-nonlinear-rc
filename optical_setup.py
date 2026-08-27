@@ -1,18 +1,21 @@
-import torch
 import numpy as np
-import torch.nn.functional as F
 
-from vimbPy import VimbaXController, OutstreamManager, TIMESTAMP_FREQUENCY
-from pyALP41.consts import DMD_HEIGHT, DMD_WIDTH
 from multiprocessing import Process, Queue
-from time import monotonic, sleep
 from encoding import vectorized_basket
-from pyALP41 import ALP41Controller
-from utils import corr2
 from threading import Thread, Event
+from time import monotonic, sleep
 from typing import Dict, Union
 from collections import deque
 from visuals import monitor
+from utils import corr2
+
+# Internal lab library to control the cameras
+from vimbPy import VimbaXController, OutstreamManager, TIMESTAMP_FREQUENCY
+
+# Internal lab library to control the DMD
+from pyALP41.consts import DMD_HEIGHT, DMD_WIDTH
+from pyALP41 import ALP41Controller 
+
 
 class OpticalSetup:
 
@@ -46,7 +49,7 @@ class OpticalSetup:
             'z_diff_cam_lin': None,
             'z_diff_dmd_nonlin': None,
             'z_dmd_cam_nonlin': None,
-            'wavelength': 632.8*nm,
+            'wavelength': 632.8 * 1e-9,
             'res_dim': self.res_dim,
             'state_nbin': self.state_nbin,
             'inpt_rep': self.inpt_rep,

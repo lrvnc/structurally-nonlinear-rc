@@ -1,12 +1,11 @@
 import numpy as np
 
-from tqdm import tqdm
-from typing import Union, Callable
-from skimage.feature import peak_local_max
-from sklearn.neural_network import MLPRegressor
-from utils import peak_downsample, grid_downsample
-from optical_setup import OpticalSetup
 from sklearn.linear_model import Ridge, RidgeCV, LassoCV, ElasticNetCV, BayesianRidge, LinearRegression
+from sklearn.neural_network import MLPRegressor
+from optical_setup import OpticalSetup
+from typing import Union, Callable
+from utils import grid_downsample
+from tqdm import tqdm
 
 
 class Reservoir:
@@ -38,19 +37,18 @@ class Reservoir:
     def __init__(self, res_dim: int, input_dim: int,
                  data_split_params: dict, forecasting_method: str,
                  leaky_rate: int, activation_func: Union[str, Callable], encoding_func: Union[str, Callable],
-                 reg_model: str, reg_model_params: dict = None, reg_window: int = None,
+                 reg_model: str, reg_model_params: dict = None,
                  res_type: str = 'vanilla',
                  optical_features: str = 'linear',
                  optical_setup: Union[None, OpticalSetup] = None,
-                 seed: int = 42, peak_finder: bool = False):
+                 seed: int = 42):
         '''
         Params:
             res_dim: int. Reservoir dimension.
             input_dim: int. Input dimension.
-            device: str. Whether to train with CPU or GPU.
             leaky_rate: float. Modulates the changing rate of the reservoir states.
-            encoding_func: str. Encoding function toat operates on the input and state.
-            activation_func: str. Activation function of the reservoir.
+            encoding_func: str. Encoding function toat operates on the input and state. Default: identity.
+            activation_func: str. Activation function of the reservoir. Default: normalize by 255.
             reg_model: int. Which regression model to use as the output layer.
             reg_model_params: dict. Dictionary containing all parameters of the chosen regression model.
         '''
@@ -78,70 +76,19 @@ class Reservoir:
                 self.reg_model = self.reg_model(**reg_model_params)
             else:
                 self.reg_model = self.reg_model()
-        self.reg_window = reg_window
         
         self.res_type = res_type
         self.optical_setup = optical_setup
         self.optical_features = optical_features
         
-        # Linear and nonlinear indices
-        self.peak_finder = peak_finder
+        self.optical_setup._refresh_ref_speckle()
         self.speckle_grain_radius = 3
-        
-        if self.peak_finder: # Select the brightest spots in the speckle to update the states
-            print('Selecting speckle indices (brightest spots).')
-            self.optical_setup._refresh_ref_speckle()
-            self.speckle_lin_center_coords = peak_local_max(
-                self.optical_setup.ref_speckle_single,
-                min_distance=2*self.speckle_grain_radius,
-                threshold_rel=0.1,
-                num_peaks=res_dim
-            )
-            
-            self.speckle_nonlin_center_coords = peak_local_max(
-                self.optical_setup.ref_speckle_double,
-                min_distance=2*self.speckle_grain_radius,
-                threshold_rel=0.1,
-                num_peaks=res_dim
-            )
-            self.downsample = lambda img: peak_downsample(image=img, centers=self.speckle_lin_center_coords, radius=self.speckle_grain_radius)
-            
-            assert self.speckle_lin_center_coords.shape[0] == res_dim and self.speckle_nonlin_center_coords.shape[0] == res_dim
-        
-        else: # Circular downsample in a grid -> random select some indices
-            print('Selecting speckle indices (grid).')
-            self.optical_setup._refresh_ref_speckle()
-            speckle_tmp = grid_downsample(img=self.optical_setup.ref_speckle_single, s=2*2*self.speckle_grain_radius, radius=self.speckle_grain_radius, agg='mean') # s=8, r=2
-            self.speckle_idx = np.random.choice(speckle_tmp.size, size=self.res_dim)
-            self.downsample = lambda img: grid_downsample(img=img, s=2*2*self.speckle_grain_radius, radius=self.speckle_grain_radius, agg='mean').flatten()[self.speckle_idx]
-
-
-    def init_internal_weights(self, spectral_radius: float = 0.99):
-        '''
-        Initialize internal weights.
-
-        Params:
-            spectral_radius: float. Scales the Reservoir Weights.
-
-        Returns:
-            self.W_in: np.array[float64] of dimension (self.res_dim, self.input_dim).
-            self.W_res: np.array[float64] of dimension (self.res_dim, self.res_dim).
-            self.bias: np.array[float64] of dimension (self.res_dim, 1).
-        '''
-        self.W_in = self.rng.standard_normal((self.res_dim, self.input_dim), dtype=np.float64)
-        self.W_res = self.rng.standard_normal((self.res_dim, self.res_dim), dtype=np.float64)
-        self.bias = self.rng.standard_normal((self.res_dim, 1), dtype=np.float64)
-
-        # Spectral radius adjustment (Echo states)
-        eigvals = np.linalg.eigvals(self.W_res)
-        self.W_res = self.W_res / np.abs(eigvals).max() * spectral_radius
-
-        # Experiment -> vanilla with nonlinear features
-        self.W_concat = np.hstack((self.W_in, self.W_res, self.bias))
-        self.W_nonlin = self.rng.standard_normal((self.res_dim, self.W_concat.flatten().size), dtype=np.float64)
+        speckle_tmp = grid_downsample(img=self.optical_setup.ref_speckle_single, s=2*2*self.speckle_grain_radius, radius=self.speckle_grain_radius, agg='mean') # s=8, r=2
+        self.speckle_idx = np.random.choice(speckle_tmp.size, size=self.res_dim)
+        self.downsample = lambda img: grid_downsample(img=img, s=2*2*self.speckle_grain_radius, radius=self.speckle_grain_radius, agg='mean').flatten()[self.speckle_idx]
 
     
-    def res_dynamics(self, state: np.ndarray[np.float64], inpt: np.ndarray[np.float64],
+    def res_dynamics(self, state: np.ndarray[np.float64],
                      speckle_lin: np.ndarray[np.float64] = None, speckle_nonlin: np.ndarray[np.float64] = None) -> np.ndarray[np.float64]:
         '''
         Dynamics of the reservoir (how the states evolve).
@@ -160,12 +107,8 @@ class Reservoir:
         elif self.optical_features == 'nonlinear':
             nonlin_optical_features = self.downsample(img=speckle_nonlin)
             next_state = (1-self.leaky_rate) * state + self.leaky_rate * self.activation_func(nonlin_optical_features).reshape(-1, 1)
-        elif self.res_type == 'vanilla':
-            # Equivalent to the digital implementation below (default)
-            next_state = (1-self.leaky_rate) * state + self.leaky_rate * self.activation_func(self.W_concat @ np.vstack((inpt, state, np.ones(1).reshape(-1, 1))))
         else:
-            # Digital implementation
-            next_state = (1-self.leaky_rate) * state + self.leaky_rate * self.activation_func(self.W_in @ self.encoding_func(inpt) + self.W_res @ self.encoding_func(state) + self.bias)
+            raise NotImplementedError()
         return next_state
     
 
@@ -209,15 +152,12 @@ class Reservoir:
         self.train_states = np.zeros((train_timesteps+h_max, self.res_dim), dtype=np.float64) # States in rows (top to bottom = x(0) -> x(T))
 
         for t in tqdm(range(train_timesteps+h_max), desc='Train phase'):
-            if self.res_type == 'vanilla':
-                raise NotImplementedError('Verify vanilla reservoir')
-                x = self.res_dynamics(state=x.reshape(-1, 1), inpt=train_data[:, t].reshape(-1, 1), speckle_lin=None, speckle_nonlin=None)
-            elif self.res_type == 'optical':
+            if self.res_type == 'optical':
                 # Need to send the state and the input as colum vectors
                 speckle_lin, speckle_nonlin = self.optical_setup.compute_f(state=self.encoding_func(x.reshape(-1, 1)),
                                                                            inpt=self.encoding_func(train_data[:, t].reshape(-1, 1)),
                                                                            optical_features=self.optical_features)
-                x = self.res_dynamics(state=x.reshape(-1, 1), inpt=train_data[:, t].reshape(-1, 1), speckle_lin=speckle_lin, speckle_nonlin=speckle_nonlin)
+                x = self.res_dynamics(state=x.reshape(-1, 1), speckle_lin=speckle_lin, speckle_nonlin=speckle_nonlin)
             else:
                 raise NotImplementedError
 
@@ -247,15 +187,12 @@ class Reservoir:
         # Warmup (phase 1)
         for t in tqdm(range(warmup_timesteps), desc='Test phase (warm up)'):
 
-            if self.res_type == 'vanilla':
-                raise NotImplementedError('Verify vanilla reservoir')
-                x = self.res_dynamics(state=x.reshape(-1, 1), inpt=inpt, speckle_lin=None, speckle_nonlin=None)
-            elif self.res_type == 'optical':
+            if self.res_type == 'optical':
                 # Need to send the state and the input as colum vectors
                 speckle_lin, speckle_nonlin = self.optical_setup.compute_f(state=self.encoding_func(x.reshape(-1, 1)),
                                                                            inpt=self.encoding_func(warmup_data[:, t].reshape(-1, 1)),
                                                                            optical_features=self.optical_features)
-                x = self.res_dynamics(state=x.reshape(-1, 1), inpt=warmup_data[:, t].reshape(-1, 1), speckle_lin=speckle_lin, speckle_nonlin=speckle_nonlin)
+                x = self.res_dynamics(state=x.reshape(-1, 1), speckle_lin=speckle_lin, speckle_nonlin=speckle_nonlin)
             else:
                 raise NotImplementedError
             
@@ -264,15 +201,12 @@ class Reservoir:
         # Forecasting (phase 2)
         for t in tqdm(range(rolling_window), desc='Test phase (forecasting)'):
 
-            if self.res_type == 'vanilla':
-                raise NotImplementedError('Verify vanilla reservoir')
-                x = self.res_dynamics(state=x.reshape(-1, 1), inpt=inpt, speckle_lin=None, speckle_nonlin=None)
-            elif self.res_type == 'optical':
+            if self.res_type == 'optical':
                 # Need to send the state and the input as colum vectors
                 speckle_lin, speckle_nonlin = self.optical_setup.compute_f(state=self.encoding_func(x.reshape(-1, 1)),
                                                                            inpt=self.encoding_func(test_data[:, t].reshape(-1, 1)),
                                                                            optical_features=self.optical_features)
-                x = self.res_dynamics(state=x.reshape(-1, 1), inpt=test_data[:, t].reshape(-1, 1), speckle_lin=speckle_lin, speckle_nonlin=speckle_nonlin)
+                x = self.res_dynamics(state=x.reshape(-1, 1), speckle_lin=speckle_lin, speckle_nonlin=speckle_nonlin)
             else:
                 raise NotImplementedError
             
@@ -291,67 +225,14 @@ class Reservoir:
                     pred = x.flatten() @ self.W_out_one + self.b_out_one
                     self.predictions_one[t_idx, i:i+self.input_dim] = pred.flatten()
 
-                    if self.res_type == 'vanilla':
-                        raise NotImplementedError('Verify vanilla reservoir')
-                        x = self.res_dynamics(state=x.reshape(-1, 1), inpt=inpt, speckle_lin=None, speckle_nonlin=None)
-                    elif self.res_type == 'optical':
+                    if self.res_type == 'optical':
                         # Need to send the state and the input as colum vectors
                         pred = pred.reshape(-1, 1)
                         pred = np.clip(pred, a_min=0.0, a_max=1.0)
                         speckle_lin, speckle_nonlin = self.optical_setup.compute_f(state=self.encoding_func(x.reshape(-1, 1)),
                                                                                    inpt=self.encoding_func(pred),
                                                                                    optical_features=self.optical_features)
-                        x = self.res_dynamics(state=x.reshape(-1, 1), inpt=pred, speckle_lin=speckle_lin, speckle_nonlin=speckle_nonlin)
+                        x = self.res_dynamics(state=x.reshape(-1, 1), speckle_lin=speckle_lin, speckle_nonlin=speckle_nonlin)
 
-
-    def score(self, X_train: np.ndarray[np.float64], y_test: np.ndarray[np.float64], metrics: list[str]) -> dict[str, Union[np.ndarray[np.float64, float]]]:
-        '''
-        Computes some metrics to evaluate the reservoir.
-
-        Params:
-            metrics: list with the metrics to compute.
-            baseline_metrics: whether to compute the baseline metrics as well.
-        '''
-
-        raise NotImplementedError('Work in progress')
-        results = {metric: None for metric in metrics}
-
-        self.predictions_linear_model = np.repeat(np.tile(X_train[:, :-self.gap].mean(axis=1), self.pred_horizon).reshape(1,-1), self.test_timesteps, axis=0) # Linear model learns the mean of the train data
-        mse_linear_model = np.mean((y_test - self.predictions_linear_model)**2, axis=0)
-
-        mse_reservoir_model = np.mean((y_test - self.predictions)**2, axis=0)
-        std_mse_reservoir_model = np.std((y_test - self.predictions)**2, axis=0)
-
-        for metric in metrics:
-            
-            if metric == 'nmse_per_dimension_per_horizon':
-                nmse_per_dim_per_horizon = np.zeros((self.input_dim, self.pred_horizon), dtype=np.float64)
-                scaled_std_mse_per_dim_per_horizon = np.zeros((self.input_dim, self.pred_horizon), dtype=np.float64)
-                for space_dim_idx in range(self.input_dim):
-                    h_idx = [i for i in range(space_dim_idx, space_dim_idx+self.pred_horizon*self.input_dim, self.input_dim)]
-                    nmse_per_dim_per_horizon[space_dim_idx, :] = mse_reservoir_model[h_idx] / mse_linear_model[h_idx] # divide by mse_linear_model (our baseline)
-                    scaled_std_mse_per_dim_per_horizon[space_dim_idx, :] = std_mse_reservoir_model[h_idx] / mse_linear_model[h_idx] # scaling
-                results['nmse_per_dimension_per_horizon'] = nmse_per_dim_per_horizon
-                results['mse_std_per_dimension_per_horizon'] = scaled_std_mse_per_dim_per_horizon
-
-            if metric == 'nmse_per_horizon':
-                mse_reservoir_model_per_horizon = np.zeros((self.pred_horizon,), dtype=np.float64)
-                mse_linear_model_per_horizon = np.zeros((self.pred_horizon,), dtype=np.float64)
-                
-                for h in range(0, self.pred_horizon*self.input_dim, self.input_dim):
-                    idx = h//self.input_dim
-                    mse_reservoir_model_per_horizon[idx] = np.mean(mse_reservoir_model[h:h+self.input_dim])
-                    mse_linear_model_per_horizon[idx] = np.mean(mse_linear_model[h:h+self.input_dim])
-                
-                results['nmse'] = mse_reservoir_model_per_horizon / mse_linear_model_per_horizon 
-                results['running_nmse'] = np.cumsum(mse_reservoir_model_per_horizon) / np.cumsum(mse_linear_model_per_horizon)
-
-            if metric == 'running_nmse_per_dimension_per_horizon':
-                nmse_per_dim_per_horizon = np.zeros((self.input_dim, self.pred_horizon), dtype=np.float64)
-                for space_dim_idx in range(self.input_dim):
-                    h_idx = [i for i in range(space_dim_idx, space_dim_idx+self.pred_horizon*self.input_dim, self.input_dim)]
-                    nmse_per_dim_per_horizon[space_dim_idx, :] = np.cumsum(mse_reservoir_model[h_idx]) / np.cumsum(mse_linear_model[h_idx]) # divide by mse_linear_model (our baseline)
-                results['running_nmse_per_dimension_per_horizon'] = nmse_per_dim_per_horizon
-
-        return results
-    
+                    else:
+                        raise NotImplementedError    

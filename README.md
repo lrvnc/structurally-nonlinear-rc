@@ -1,7 +1,8 @@
 # Code: Optical Reservoir Computing with Structural Nonlinearity for Forecasting Chaotic Time Series
 
 ---
-[![REPO DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22229521.svg)](https://doi.org/10.5281/zenodo.22229521)
+
+[![REPO DOI](assets/repo-doi-badge.svg)](https://doi.org/10.5281/zenodo.22229521)
 
 This repository contains the base code that supports the work "Optical Reservoir Computing with Structural Nonlinearity for Forecasting Chaotic Time Series".
 
